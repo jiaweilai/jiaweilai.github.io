@@ -156,7 +156,7 @@
   <h2 id="energyTitle">Building</h2>
   <p class="sub" id="energySub">Electricity demand — last 24 hours</p>
   <canvas id="energyChart" width="640" height="360"></canvas>
-  <p id="energyNow">Now: <b>0</b> kW</p>
+  <p id="energyNow"></p>
 </div>
 
 <div id="profilePopup" class="popup panel" role="dialog" aria-labelledby="profileTitle">
@@ -210,6 +210,10 @@ const CITIZEN_SPEED = 1.0;                    // tiles / sim second
 const CAR_SPEED = 2.8;
 const SAMPLE_MIN = 10;                        // energy sample every N game minutes
 const HISTORY_LEN = 144;                      // 24h * 6 samples/h
+const CAR_SPD_LEN = 240;                      // speed telemetry ring buffer
+const CAR_SPD_DT = 0.5;                       // sample every 0.5 sim sec (= 0.5 game min)
+const KMH_PER_TILE = 18;                      // 1 tile ≈ 5 m → tiles/s * 18 = km/h
+const STEPS_PER_TILE = 90;                    // pedometer scale (game-time pacing)
 
 const T = { GRASS: 0, ROAD: 1, WALK: 2, LOT: 3, PARK: 4, WATER: 5 };
 
@@ -582,6 +586,10 @@ function sampleEnergy(nowMin) {
       b.history[b.histIdx] = energyLoad(b, hour);
       b.histIdx = (b.histIdx + 1) % HISTORY_LEN;
     }
+    for (const c of citizens) {            // rotate pedometer buckets
+      c.stepIdx = (c.stepIdx + 1) % HISTORY_LEN;
+      c.steps[c.stepIdx] = 0;
+    }
     if (openBuilding) drawEnergyChart(openBuilding);
   }
 }
@@ -882,8 +890,17 @@ function spawnCitizen(isOwner) {
     hair: pick(jitter, ['#2a2a2e','#4a3220','#6e4a2a','#888','#1a1a1a']),
     phase: jitter() * 7,
     waiting: false, crossing: null,
-    isOwner: !!isOwner
+    isOwner: !!isOwner,
+    steps: new Float32Array(HISTORY_LEN), stepIdx: 0,
+    waitToday: (clockMin % 1440) * 0.03 * (0.5 + jitter())
   };
+  // prefill a plausible walking history (distance in tiles per 10-min bucket)
+  let act = 0.75;
+  for (let i = 0; i < HISTORY_LEN; i++) {
+    act = clamp(act + (jitter() - 0.5) * 0.2, 0.45, 1);
+    c.steps[i] = c.speed * 10 * act;
+  }
+  c.steps[c.stepIdx] = 0;   // current bucket starts empty
   const p = nodePos(startKey);
   c.wx = p.wx; c.wy = p.wy;
   pickNextWalk(c);
@@ -912,12 +929,13 @@ function updateCitizens(dt) {
   for (const c of citizens) {
     if (c.waiting) {
       if (pedCanCross(c.crossing.cross, c.crossing.axis)) c.waiting = false;
-      else continue;
+      else { c.waitToday += dt; continue; }
     }
     const a = nodePos(c.from), b = nodePos(c.to);
     const len = Math.abs(b.wx - a.wx) + Math.abs(b.wy - a.wy) || 1;
     c.t += (c.speed * dt) / len;
     c.phase += dt * 9;
+    c.steps[c.stepIdx] += c.speed * dt;   // pedometer (tiles walked this bucket)
     if (c.t >= 1) { c.wx = b.wx; c.wy = b.wy; pickNextWalk(c); }
     else { c.wx = lerp(a.wx, b.wx, c.t); c.wy = lerp(a.wy, b.wy, c.t); }
   }
@@ -932,6 +950,7 @@ function setPopulation(n) {
   const carTarget = clamp(Math.round(n * 0.3), 8, 80);
   while (cars.length < carTarget) spawnCar();
   while (cars.length > carTarget) cars.pop();
+  if ((openCar && !cars.includes(openCar)) || (openCitizen && !citizens.includes(openCitizen))) closePopups();
 }
 
 // --- cars ---
@@ -956,7 +975,8 @@ function spawnCar() {
       color: pick(jitter, CAR_COLORS),
       vertical, line, s, dir,
       lat: 0.22 * (jitter() < 0.5 ? 1 : -1),
-      speed: 0, maxSpeed: CAR_SPEED * (0.8 + jitter() * 0.4)
+      speed: 0, maxSpeed: CAR_SPEED * (0.8 + jitter() * 0.4),
+      spd: new Float32Array(CAR_SPD_LEN), spdIdx: 0, spdCount: 0
     });
     const c = cars[cars.length - 1];
     const lo = laneOffset(c.dir);
@@ -1204,8 +1224,11 @@ function handleHover(sx, sy) {
 }
 function handleClick(sx, sy) {
   const hit = agentAt(sx, sy);
-  if (hit && hit.kind === 'citizen' && hit.c.isOwner) { openProfile(); return; }
-  if (hit) return;   // ordinary agents: tooltip only
+  if (hit && hit.kind === 'citizen') {
+    if (hit.c.isOwner) openProfile(); else openCitizenPopup(hit.c);
+    return;
+  }
+  if (hit && hit.kind === 'car') { openCarPopup(hit.c); return; }
   const b = buildingAt(sx, sy);
   if (b) { openEnergy(b); return; }
   closePopups();
@@ -1505,11 +1528,11 @@ function render(now) {
    ================================================================ */
 const energyPopup = document.getElementById('energyPopup');
 const profilePopup = document.getElementById('profilePopup');
-let openBuilding = null;
+let openBuilding = null, openCar = null, openCitizen = null;
 function closePopups() {
   energyPopup.classList.remove('open');
   profilePopup.classList.remove('open');
-  openBuilding = null;
+  openBuilding = openCar = openCitizen = null;
 }
 function openProfile() {
   closePopups();
@@ -1527,19 +1550,36 @@ function openEnergy(b) {
   energyPopup.querySelector('.close').focus();
   drawEnergyChart(b);
 }
-function drawEnergyChart(b) {
+function openCarPopup(c) {
+  closePopups();
+  openCar = c;
+  document.getElementById('energyTitle').textContent = c.name;
+  document.getElementById('energySub').textContent = 'Vehicle telemetry — speed, last 2 h';
+  energyPopup.classList.add('open');
+  energyPopup.querySelector('.close').focus();
+  drawCarChart(c);
+}
+function openCitizenPopup(c) {
+  closePopups();
+  openCitizen = c;
+  document.getElementById('energyTitle').textContent = c.name;
+  document.getElementById('energySub').textContent = 'Citizen activity — steps per hour, last 24 h';
+  energyPopup.classList.add('open');
+  energyPopup.querySelector('.close').focus();
+  drawCitizenChart(c);
+}
+// generic series chart: vals oldest->newest (may be shorter than capacity → right-aligned)
+function renderChart(vals, opt) {
   const cv = document.getElementById('energyChart');
   const g = cv.getContext('2d');
   const cw = cv.width, ch = cv.height;
   g.clearRect(0, 0, cw, ch);
+  if (!vals.length) return 0;
   const padL = 56, padR = 16, padT = 14, padB = 34;
   const pw2 = cw - padL - padR, ph2 = ch - padT - padB;
-  // gather ordered samples (oldest -> newest)
-  const vals = [];
-  for (let i = 0; i < HISTORY_LEN; i++) vals.push(b.history[(b.histIdx + i) % HISTORY_LEN]);
-  let vmax = 10;
+  let vmax = opt.yMin || 10;
   for (const v of vals) if (v > vmax) vmax = v;
-  vmax = Math.ceil(vmax / 50) * 50;
+  vmax = Math.ceil(vmax / opt.yStep) * opt.yStep;
   // grid + y labels
   g.strokeStyle = 'rgba(255,255,255,0.12)'; g.lineWidth = 1;
   g.fillStyle = '#aab4cc'; g.font = '20px system-ui, sans-serif'; g.textAlign = 'right';
@@ -1548,33 +1588,82 @@ function drawEnergyChart(b) {
     g.beginPath(); g.moveTo(padL, y); g.lineTo(cw - padR, y); g.stroke();
     g.fillText(Math.round((vmax * i) / 4), padL - 8, y + 7);
   }
-  // x labels every 4 h
   g.textAlign = 'center';
-  const nowMin = clockMin;
-  for (let kk = 0; kk <= 6; kk++) {
-    const sampleIdx = Math.min(kk * 24, HISTORY_LEN - 1);
-    const x = padL + (pw2 * sampleIdx) / (HISTORY_LEN - 1);
-    const m = nowMin - (HISTORY_LEN - 1 - sampleIdx) * SAMPLE_MIN;
-    const hh2 = Math.floor((((m % 1440) + 1440) % 1440) / 60);
-    g.fillText(String(hh2).padStart(2, '0') + ':00', x, ch - 10);
+  for (const t of opt.xTicks) g.fillText(t.label, padL + pw2 * t.frac, ch - 10);
+  const cap = opt.capacity || vals.length;
+  const X = i => padL + pw2 * ((cap - vals.length + i) / Math.max(1, cap - 1));
+  const Y = v => padT + ph2 - (ph2 * v) / vmax;
+  // stopped-at-light band along the baseline
+  if (opt.stops) {
+    g.fillStyle = 'rgba(232,69,69,0.85)';
+    const sw2 = pw2 / Math.max(1, cap - 1);
+    for (let i = 0; i < vals.length; i++) {
+      if (opt.stops[i]) g.fillRect(X(i) - sw2 / 2 - 0.5, padT + ph2 - 4, sw2 + 1, 4);
+    }
   }
   // area + line
   g.beginPath();
-  for (let i = 0; i < vals.length; i++) {
-    const x = padL + (pw2 * i) / (vals.length - 1);
-    const y = padT + ph2 - (ph2 * vals[i]) / vmax;
-    i ? g.lineTo(x, y) : g.moveTo(x, y);
-  }
-  g.strokeStyle = '#ffc94d'; g.lineWidth = 3; g.stroke();
-  g.lineTo(padL + pw2, padT + ph2); g.lineTo(padL, padT + ph2); g.closePath();
-  g.fillStyle = 'rgba(255,201,77,0.16)'; g.fill();
-  // newest dot
+  for (let i = 0; i < vals.length; i++) i ? g.lineTo(X(i), Y(vals[i])) : g.moveTo(X(i), Y(vals[i]));
+  g.strokeStyle = opt.color; g.lineWidth = 3; g.stroke();
+  g.lineTo(X(vals.length - 1), padT + ph2); g.lineTo(X(0), padT + ph2); g.closePath();
+  g.fillStyle = opt.fill; g.fill();
   const lastV = vals[vals.length - 1];
-  g.fillStyle = '#ffc94d';
-  g.beginPath();
-  g.arc(padL + pw2, padT + ph2 - (ph2 * lastV) / vmax, 6, 0, 7);
-  g.fill();
-  document.querySelector('#energyNow b').textContent = Math.round(lastV);
+  g.fillStyle = opt.color;
+  g.beginPath(); g.arc(X(vals.length - 1), Y(lastV), 6, 0, 7); g.fill();
+  return lastV;
+}
+function timeTicks(windowMin, n) {   // n+1 ticks spanning the last windowMin game-minutes
+  const ticks = [];
+  for (let k = 0; k <= n; k++) {
+    const m = clockMin - windowMin * (1 - k / n);
+    const mm = ((m % 1440) + 1440) % 1440;
+    ticks.push({ frac: k / n, label: String(Math.floor(mm / 60)).padStart(2, '0') + ':' + String(Math.floor(mm % 60)).padStart(2, '0') });
+  }
+  return ticks;
+}
+function drawEnergyChart(b) {
+  const vals = [];
+  for (let i = 0; i < HISTORY_LEN; i++) vals.push(b.history[(b.histIdx + i) % HISTORY_LEN]);
+  const lastV = renderChart(vals, {
+    yStep: 50, color: '#ffc94d', fill: 'rgba(255,201,77,0.16)',
+    xTicks: timeTicks((HISTORY_LEN - 1) * SAMPLE_MIN, 6)
+  });
+  document.getElementById('energyNow').innerHTML = 'Now: <b>' + Math.round(lastV) + '</b> kW';
+}
+function drawCarChart(c) {
+  const n = c.spdCount;
+  const vals = [], stops = [];
+  for (let i = 0; i < n; i++) {
+    const v = n < CAR_SPD_LEN ? c.spd[i] : c.spd[(c.spdIdx + i) % CAR_SPD_LEN];
+    vals.push(v * KMH_PER_TILE);
+    stops.push(v < 0.05);
+  }
+  if (!vals.length) { vals.push(c.speed * KMH_PER_TILE); stops.push(c.speed < 0.05); }
+  const lastV = renderChart(vals, {
+    yStep: 10, yMin: 20, capacity: CAR_SPD_LEN, stops,
+    color: '#5fd4a8', fill: 'rgba(95,212,168,0.16)',
+    xTicks: timeTicks(CAR_SPD_LEN * CAR_SPD_DT, 4)
+  });
+  let stoppedMin = 0;
+  for (const s of stops) if (s) stoppedMin += CAR_SPD_DT;
+  const windowMin = Math.max(1, Math.round(vals.length * CAR_SPD_DT));
+  document.getElementById('energyNow').innerHTML =
+    'Now: <b>' + Math.round(lastV) + '</b> km/h · stopped at lights ' + Math.round(stoppedMin) + ' of last ' + windowMin + ' min';
+}
+function drawCitizenChart(c) {
+  const rate = STEPS_PER_TILE * (60 / SAMPLE_MIN);   // bucket distance → steps per hour
+  const vals = [];
+  for (let k = 1; k < HISTORY_LEN; k++) vals.push(c.steps[(c.stepIdx + k) % HISTORY_LEN] * rate);
+  const frac = clamp((clockMin - lastSampleMin) / SAMPLE_MIN, 0.15, 1);
+  vals.push(c.steps[c.stepIdx] / frac * rate);       // current bucket, scaled to full rate
+  const lastV = renderChart(vals, {
+    yStep: 1000, yMin: 2000, color: '#7aa7ff', fill: 'rgba(122,167,255,0.16)',
+    xTicks: timeTicks((HISTORY_LEN - 1) * SAMPLE_MIN, 6)
+  });
+  const status = c.waiting ? 'Waiting at a light' : 'Walking';
+  document.getElementById('energyNow').innerHTML =
+    status + ' · <b>' + Math.round(lastV).toLocaleString() + '</b> steps/h · waited ' +
+    Math.round(c.waitToday) + ' min at lights today';
 }
 
 for (const el of document.querySelectorAll('[data-close]')) {
@@ -1629,6 +1718,8 @@ function updateHUD(now) {
   document.getElementById('clockGlyph').textContent = (hour >= 6.5 && hour < 18.5) ? '☀️' : '🌙';
   document.getElementById('statPop').textContent = citizens.length;
   document.getElementById('statCars').textContent = cars.length;
+  if (openCar) drawCarChart(openCar);          // live telemetry refresh
+  else if (openCitizen) drawCitizenChart(openCitizen);
 }
 
 /* ================================================================
@@ -1637,12 +1728,27 @@ function updateHUD(now) {
 const STEP = 1 / 60;
 let acc = 0, lastT = 0, nowSec = 0;
 
+let carSampleAcc = 0, curDay = 0;
 function update(dt) {
   simClock += dt;
   clockMin += dt;             // 1 sim second = 1 game minute
   updateCitizens(dt);
   updateCars(dt);
   sampleEnergy(clockMin);
+  carSampleAcc += dt;
+  while (carSampleAcc >= CAR_SPD_DT) {
+    carSampleAcc -= CAR_SPD_DT;
+    for (const c of cars) {
+      c.spd[c.spdIdx] = c.speed;
+      c.spdIdx = (c.spdIdx + 1) % CAR_SPD_LEN;
+      if (c.spdCount < CAR_SPD_LEN) c.spdCount++;
+    }
+  }
+  const day = Math.floor(clockMin / 1440);
+  if (day !== curDay) {
+    curDay = day;
+    for (const c of citizens) c.waitToday = 0;
+  }
 }
 
 function frame(tms) {
