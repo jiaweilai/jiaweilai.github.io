@@ -1,0 +1,4 @@
+# local-only test fixtures
+vendor/
+index.local.html
+node_modules/
