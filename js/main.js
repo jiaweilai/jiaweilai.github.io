@@ -5,6 +5,7 @@ import { buildRain } from './rain.js';
 import { buildTraffic } from './traffic.js';
 import { buildPost } from './post.js';
 import { createAudio } from './audio.js';
+import { buildAtmosphere } from './atmosphere.js';
 
 // ------------------------------------------------------------------ boot screen
 const $ = (s) => document.querySelector(s);
@@ -59,6 +60,7 @@ scene.fog = new THREE.FogExp2(SKY.clone(), 0.0062);
 const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.5, 700);
 
 // ------------------------------------------------------------------ world
+const atmosphere = buildAtmosphere(scene);
 const city = buildCity(scene, renderer);
 const rain = buildRain(scene);
 const traffic = buildTraffic(scene, city.half);
@@ -107,9 +109,26 @@ const io = new IntersectionObserver((entries) => {
       if (en.target !== sections[0]) glitchBurst(0.35);
     }
   });
-}, { threshold: 0.45 });
+}, { threshold: 0.08 });
 sections.forEach((s) => io.observe(s));
 $('#teleTier').textContent = Q.tier.toUpperCase();
+
+// City view keeps the original scroll journey, with an unobstructed panorama.
+const cityView = $('#cityView');
+const profile = $('#profile');
+function setCityView(on) {
+  document.body.classList.toggle('city-only', on);
+  profile.inert = on;
+  cityView.setAttribute('aria-pressed', String(on));
+  cityView.textContent = on ? 'SHOW PROFILE ◇' : 'VIEW CITY ◇';
+}
+cityView.addEventListener('click', () => setCityView(!document.body.classList.contains('city-only')));
+addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && document.body.classList.contains('city-only')) {
+    setCityView(false);
+    cityView.focus();
+  }
+});
 
 // WeChat modal
 const qr = $('#qr');
@@ -144,6 +163,7 @@ let started = false;
 $('#enter').addEventListener('click', () => {
   loader.classList.add('hide');
   started = true;
+  $('#brand').focus({ preventScroll: true });
   glitchBurst(0.9);
 });
 // also allow entering by clicking anywhere on the loader once ready
@@ -203,13 +223,15 @@ const teleTime = $('#teleTime');
 
 function frame() {
   requestAnimationFrame(frame);
+  if (document.hidden) { clock.getDelta(); return; }
   const dt = Math.min(clock.getDelta(), 0.05);
-  const t = clock.elapsedTime;
+  const t = Q.reducedMotion ? 0 : clock.elapsedTime;
   uTime.value = t;
 
   // camera: scroll spline + mouse parallax + idle drift
   smoothT += (scrollT - smoothT) * (1 - Math.exp(-dt * 2.2));
   mouseS.lerp(mouse, 1 - Math.exp(-dt * 3));
+  if (Q.reducedMotion) { smoothT = scrollT; mouseS.set(0, 0); }
   camPath.getPoint(smoothT, tmpPos);
   lookPath.getPoint(smoothT, tmpLook);
   const drift = Q.reducedMotion ? 0 : 1;
@@ -224,7 +246,8 @@ function frame() {
   // world updates
   rain.update(camera);
   traffic.update(t);
-  lightning(t, dt);
+  if (!Q.reducedMotion) lightning(t, dt);
+  atmosphere.position.copy(camera.position);
   city.pointLights.forEach((l, i) => { l.intensity = l.userData.base ??= l.intensity; l.intensity = l.userData.base * (0.85 + 0.15 * Math.sin(t * (2.3 + i) + i * 1.7)); });
   city.holo.material.uniforms.uTime.value = t;
 
@@ -242,7 +265,7 @@ function frame() {
   fpsAcc += dt; fpsN++; fpsTimer += dt;
   if (fpsTimer > 0.5) { $('#teleFps').textContent = Math.round(fpsN / fpsAcc); fpsAcc = fpsN = fpsTimer = 0; }
   timeAcc += dt;
-  if (timeAcc > 1) { timeAcc = 0; teleTime.textContent = new Date().toLocaleTimeString('en-GB', { hour12: false }); }
+  if (timeAcc > 1) { timeAcc = 0; teleTime.textContent = new Date().toLocaleTimeString('en-GB', { hour12: false, timeZone: 'Europe/London' }); }
 }
 
 // rain intensity follows toggle (fade)

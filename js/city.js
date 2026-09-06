@@ -406,6 +406,23 @@ export function buildCity(scene, renderer) {
   });
   group.add(eMesh);
 
+  // Sparse architectural crown lights, batched into one draw call.
+  const crowns = roofSpots.filter((r, i) => r.h > 40 && i % 3 === 0);
+  const crownMesh = new THREE.InstancedMesh(edgeGeo, edgeMat, crowns.length * 4);
+  crowns.forEach((r, i) => {
+    const tint = i % 2 ? new THREE.Color(0.2, 1.3, 1.7) : new THREE.Color(1.5, 0.12, 0.85);
+    for (let side = 0; side < 4; side++) {
+      const alongX = side < 2;
+      m4.makeRotationY(alongX ? 0 : Math.PI / 2);
+      m4.scale(new THREE.Vector3(alongX ? r.w + 0.2 : r.d + 0.2, 1, 1));
+      m4.setPosition(r.x + (alongX ? 0 : (side === 2 ? -1 : 1) * r.w / 2),
+        r.h + 0.15, r.z + (alongX ? (side === 0 ? -1 : 1) * r.d / 2 : 0));
+      crownMesh.setMatrixAt(i * 4 + side, m4);
+      crownMesh.setColorAt(i * 4 + side, tint);
+    }
+  });
+  group.add(crownMesh);
+
   // --- vertical neon signs on facades ---
   const signDefs = [
     ['賴嘉偉', '#ff2bd6'], ['劍橋', '#19e6ff'], ['歷史', '#ffb347'], ['工程', '#19e6ff'],

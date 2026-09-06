@@ -211,3 +211,46 @@ section.in .glitch::after { animation: glitchB 4s infinite steps(1); }
   #tele { display: none; }
   #prog { right: 16px; bottom: 16px; }
 }
+
+/* Refinements retain the original HUD, neon palette and full-screen world. */
+:root { --ink-dim: #b3c1da; }
+#top { background: linear-gradient(180deg, rgba(3,5,12,.92), rgba(3,5,12,.45), transparent); }
+#nav { gap: clamp(10px, 1.35vw, 22px); }
+.card { background: linear-gradient(115deg, rgba(6,10,22,.88), rgba(6,10,22,.62)); }
+#hero .card { max-width: 640px; }
+#hero h1 { font-size: clamp(42px, 6.3vw, 78px); }
+#hero .tagline { font-size: clamp(16px, 1.65vw, 21px); letter-spacing: .18em; }
+#hero .lead { margin: 18px 0 24px; font-size: 18px; line-height: 1.6; }
+#hero .eyebrow { font-size: 10px; letter-spacing: .19em; }
+#tele { padding: 8px 12px; background: rgba(3,5,12,.72); border-left: 1px solid var(--line); }
+.city-view { position: fixed; z-index: 30; bottom: 24px; left: 50%; transform: translateX(-50%); min-height: 44px; padding: 10px 18px; background: rgba(3,5,12,.85); }
+.city-only .card, .city-only .hint { opacity: 0; visibility: hidden; pointer-events: none; }
+.city-only .city-view { border-color: var(--magenta); color: var(--magenta); }
+.hint { bottom: 82px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--amber); outline-offset: 5px; }
+.tile { min-width: 0; }
+.tile h3 { font-size: 13px; letter-spacing: .08em; overflow-wrap: anywhere; }
+@media (max-width: 1100px) and (min-width: 861px) {
+  #brand .zh { display: none; }
+  #brand .name { font-size: 11px; letter-spacing: .12em; }
+  #nav { gap: 10px; font-size: 10px; }
+}
+@media (max-width: 860px) {
+  #top { flex-wrap: wrap; gap: 10px; background: rgba(3,5,12,.91); }
+  #nav { flex-wrap: wrap; justify-content: flex-end; flex: 1; }
+  #hero h1 { font-size: clamp(38px, 10vw, 72px); }
+  #hero .lead { font-size: 17px; }
+  .city-view { bottom: 18px; font-size: 10px; }
+  section.panel { padding-bottom: 110px; }
+  .hint { display: none; }
+}
+@media (max-width: 420px) {
+  #brand .name { display: none; }
+  #hero .tagline { letter-spacing: .06em; font-size: 15px; }
+  .tagline .sep { margin-inline: 2px; }
+  .scen { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card, .tile, .sc { transition: none; }
+  .hint i { animation: none; }
+}
